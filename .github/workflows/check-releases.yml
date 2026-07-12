@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       COPR_WEBHOOKS: ${{ secrets.COPR_WEBHOOKS }}
+      COPR_OWNER: ${{ secrets.COPR_OWNER }}
+      COPR_PROJECT: ${{ secrets.COPR_PROJECT }}
     steps:
       - name: Depoyu indir
         uses: actions/checkout@v4
@@ -21,6 +23,12 @@ jobs:
         run: |
           set -e
           mkdir -p state
+
+          if ! jq empty apps.json 2>/dev/null; then
+            echo "HATA: apps.json gecersiz JSON formatinda! Duzeltmeden devam edilemez." >&2
+            jq empty apps.json
+            exit 1
+          fi
 
           for row in $(jq -c '.[]' apps.json); do
             name=$(echo "$row" | jq -r '.name')
@@ -37,9 +45,20 @@ jobs:
 
             prev="none"
             [ -f "$statefile" ] && prev=$(cat "$statefile")
+            tag_stripped=$(echo "$tag" | sed 's/^v//')
 
-            if [ "$tag" != "$prev" ]; then
-              echo "==> $name: yeni surum $tag (eskisi: $prev)"
+            copr_ver=$(curl -sL "https://copr.fedorainfracloud.org/api_3/package/?ownername=${COPR_OWNER}&projectname=${COPR_PROJECT}&packagename=${name}&with_latest_succeeded_build=True" \
+              | jq -r '.builds.latest_succeeded.source_package.version // empty')
+
+            need_trigger=0
+            [ "$tag" != "$prev" ] && need_trigger=1
+            case "$copr_ver" in
+              *"$tag_stripped"*) ;;
+              *) echo "    (COPR'da bu surume ait basarili build bulunamadi: '$copr_ver')"; need_trigger=1 ;;
+            esac
+
+            if [ "$need_trigger" = "1" ]; then
+              echo "==> $name: tetikleniyor (github: $tag, copr: ${copr_ver:-yok}, kayitli: $prev)"
               webhook=$(echo "$COPR_WEBHOOKS" | jq -r --arg n "$name" '.[$n] // empty')
 
               if [ -n "$webhook" ]; then
